@@ -9,8 +9,8 @@
 package it.unibo.alchemist.model.implementations;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 import com.graphhopper.GHResponse;
 import com.graphhopper.PathWrapper;
@@ -26,30 +26,47 @@ import java.util.stream.Collectors;
 public final class GraphHopperRoute implements Route {
 
     private static final long serialVersionUID = -1455332156736222268L;
-    private final int size;
-    private final double distance, time;
-    private final List<Position> points;
+    private int size;
+    private double distance, time;
+    private List<Position> points;
 
     /**
      * @param response
      *            the response to use
      */
     public GraphHopperRoute(final GHResponse response) {
-        final List<Throwable> errs = response.getErrors();
-        if (errs.isEmpty()) {
-            final PathWrapper resp = response.getBest();
-            time = resp.getTime() / 1000d;
-            distance = resp.getDistance();
-            final PointList pts = resp.getPoints();
-            size = pts.getSize();
-            final List<Position> temp = new ArrayList<>(size);
-            for (int i = 0; i < pts.getSize(); i++) {
-                temp.add(new LatLongPosition(pts.getLatitude(i), pts.getLongitude(i)));
+        final List<GHResponse> responseList = new ArrayList<>(1);
+        responseList.add(response);
+        new GraphHopperRoute(responseList);
+    }
+
+    /**
+     * @param paths A List of paths which will be concatenated creating a single path.
+     * Please note that the concatenation order is the list's one.
+     */
+    public GraphHopperRoute(final List<GHResponse> paths) {
+        final Set<Throwable> errors = paths.stream().flatMap(p -> p.getErrors().stream()).collect(Collectors.toSet());
+        if (errors.isEmpty()) {
+            final ArrayList<PathWrapper> resps = new ArrayList<>(paths.size());
+            for (int i = 0; i < paths.size(); i++) {
+                final PathWrapper resp = paths.get(i).getBest();
+                resps.add(resp);
+                time += resp.getTime() / 1000d;
+                distance += resp.getDistance();
+                final PointList pts = resp.getPoints();
+                size += pts.getSize();
+                final List<Position> temp = new ArrayList<>(size);
+                for (int a = 0; a < pts.getSize(); a++) {
+                    temp.add(new LatLongPosition(pts.getLatitude(a), pts.getLongitude(a)));
+                }
+                if (points == null) {
+                    points = new ArrayList<>(temp.size());
+                }
+                points.addAll(temp);
             }
-            points = Collections.unmodifiableList(temp);
         } else {
-            final String msg = errs.stream().map(Throwable::getMessage).collect(Collectors.joining("\n"));
-            throw new IllegalArgumentException(msg, errs.get(0));
+            final String msg = errors.stream().map(Throwable::getMessage).collect(Collectors.joining("\n"));
+            throw new IllegalArgumentException(msg, errors.stream().findAny().orElse(new Throwable("(unknown")));
         }
     }
 

@@ -1,7 +1,7 @@
 /*
  * Copyright (C) 2010-2015, Danilo Pianini and contributors
  * listed in the project's pom.xml file.
- * 
+ *
  * This file is part of Alchemist, and is distributed under the terms of
  * the GNU General Public License, with a linking exception, as described
  * in the file LICENSE in the Alchemist distribution's top directory.
@@ -13,6 +13,7 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.net.URL;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.List;
@@ -21,7 +22,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.tuple.ImmutableTriple;
 import org.apache.commons.lang3.tuple.Triple;
@@ -287,7 +287,7 @@ public class OSMEnvironment<T> extends Continuous2DEnvironment<T> implements Map
     }
 
     @Override
-    public void doBenchmark() {
+    public void enableBenchmark() {
         this.activateBenchmark = true;
     }
 
@@ -335,30 +335,65 @@ public class OSMEnvironment<T> extends Continuous2DEnvironment<T> implements Map
                 .build(new CacheLoader<Triple<Vehicle, Position, Position>, Route>() {
                     @Override
                     public Route load(final Triple<Vehicle, Position, Position> key) {
-                        final Vehicle vehicle = key.getLeft();
-                        final Position p1 = key.getMiddle();
-                        final Position p2 = key.getRight();
-                        final GHRequest req = new GHRequest(p1.getCoordinate(1), p1.getCoordinate(0), p2.getCoordinate(1), p2.getCoordinate(0))
-                                .setAlgorithm(DEFAULT_ALGORITHM)
-                                .setVehicle(vehicle.toString())
-                                .setWeighting(ROUTING_STRATEGY);
-                        mapLock.read();
-                        final GraphHopper gh = navigators.get(vehicle);
-                        mapLock.release();
-                        if (gh != null) {
-                            final GHResponse resp = gh.route(req);
-                            return new GraphHopperRoute(resp);
+                        final GHResponse response = getRoute(key);
+                        if (response != null) {
+                            return new GraphHopperRoute(response);
                         }
                         return null;
                     }
                 });
         }
         try {
+            final double appr = p1.getDistanceTo(p2) > 100 ? 10 : 0;
+            final Optional<GraphHopperRoute> approximateRoute = appr > 0
+                    ? routecache.asMap().keySet().parallelStream().map(t -> {
+                        final double distStart = t.getMiddle().getDistanceTo(p1);
+                        final double distEnd = t.getRight().getDistanceTo(p2);
+                        if (distStart > 0 && distEnd > 0 && distEnd < appr && distStart < appr) {
+                            final GHResponse r1 = getRoute(new ImmutableTriple<>(vehicle, t.getMiddle(), p1));
+                            final GHResponse r2 = getRoute(new ImmutableTriple<>(vehicle, p2, t.getRight()));
+                            return new GHResponse[]{r1, r2};
+                        }
+                        return null;
+                    })
+                    .map(t -> {
+                        if (t != null && t.length == 2) {
+                            final GHResponse rMiddle = getRoute(new ImmutableTriple<>(vehicle, p1, p2));
+                            final ArrayList<GHResponse> l = new ArrayList<>();
+                            l.add(t[0]);
+                            l.add(rMiddle);
+                            l.add(t[1]);
+                            return new GraphHopperRoute(l);
+                        }
+                        return null;
+                    })
+                    .filter(r -> r != null)
+                    .findAny() : Optional.empty();
+            if (approximateRoute.isPresent()) {
+                return approximateRoute.get();
+            }
             return routecache.get(new ImmutableTriple<>(vehicle, p1, p2));
         } catch (ExecutionException e) {
             L.error("", e);
             throw new IllegalStateException("The navigator was unable to compute a route from " + p1 + " to " + p2 + " using the navigator " + vehicle + ". This is most likely a bug", e);
         }
+    }
+
+    private GHResponse getRoute(final Triple<Vehicle, Position, Position> key) {
+        final Vehicle vehicle = key.getLeft();
+        final Position p1 = key.getMiddle();
+        final Position p2 = key.getRight();
+        final GHRequest req = new GHRequest(p1.getCoordinate(1), p1.getCoordinate(0), p2.getCoordinate(1), p2.getCoordinate(0))
+                .setAlgorithm(DEFAULT_ALGORITHM)
+                .setVehicle(vehicle.toString())
+                .setWeighting(ROUTING_STRATEGY);
+        mapLock.read();
+        final GraphHopper gh = navigators.get(vehicle);
+        mapLock.release();
+        if (gh != null) {
+            return gh.route(req);
+        }
+        return null;
     }
 
     @Override
